@@ -14,10 +14,9 @@
 
 import logging
 import os
+from importlib.metadata import PackageNotFoundError, version
 
-import pkg_resources
 from packaging.version import parse as parse_version
-from pkg_resources import DistributionNotFound
 
 from .protocol import DataProto
 from .utils.device import is_npu_available
@@ -50,7 +49,7 @@ if is_npu_available:
     package_name = "transformers"
     required_version_spec = "4.52.4"
     try:
-        installed_version = pkg_resources.get_distribution(package_name).version
+        installed_version = version(package_name)
         installed = parse_version(installed_version)
         required = parse_version(required_version_spec)
 
@@ -59,7 +58,7 @@ if is_npu_available:
                 f"{package_name} version >= {required_version_spec} is required on ASCEND NPU, current version is "
                 f"{installed}."
             )
-    except DistributionNotFound as e:
+    except PackageNotFoundError as e:
         raise ImportError(
             f"package {package_name} is not installed, please run pip install {package_name}=={required_version_spec}"
         ) from e

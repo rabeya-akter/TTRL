@@ -230,11 +230,13 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         log_gpu_memory_usage(f"Before init {role} from HF AutoModel", logger=logger)
         local_path = model_path
+        print(f"[{role}] init_model: loading tokenizer/processor from {local_path}")
 
         # note that we have to create model in fp32. Otherwise, the optimizer is in bf16, which is incorrect
         # TODO(zhangchi.usc1992): 1. support create from random initialized model. 2. Support init with FSDP directly
         self.tokenizer = hf_tokenizer(local_path, trust_remote_code=trust_remote_code)
         self.processor = hf_processor(local_path, trust_remote_code=trust_remote_code)
+        print(f"[{role}] init_model: tokenizer/processor ready")
 
         if self.config.model.get("custom_chat_template", None) is not None:
             if self.processor is not None:
@@ -252,6 +254,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         actor_model_config = AutoConfig.from_pretrained(
             local_path, trust_remote_code=trust_remote_code, attn_implementation="flash_attention_2"
         )
+        print(f"[{role}] init_model: model config loaded")
 
         # patch for kimi-vl
         if getattr(actor_model_config, "model_type", None) == "kimi_vl":
@@ -281,12 +284,15 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             else:
                 actor_module_class = AutoModelForCausalLM
 
+            print(f"[{role}] init_model: starting from_pretrained for {actor_module_class.__name__}")
+
             actor_module = actor_module_class.from_pretrained(
                 pretrained_model_name_or_path=local_path,
                 torch_dtype=torch_dtype,
                 config=actor_model_config,
                 trust_remote_code=trust_remote_code,
             )
+            print(f"[{role}] init_model: from_pretrained finished")
 
             # Apply Liger kernel to the model if use_liger is set to True
             if use_liger:
@@ -329,6 +335,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         if self.rank == 0:
             print_model_size(actor_module)
+            print(f"[{role}] init_model: model size printed")
 
         log_gpu_memory_usage(f"After init {role} from HF AutoModel", logger=logger)
 
@@ -367,6 +374,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         cpu_offload = None if role == "actor" else CPUOffload(offload_params=True)
         fsdp_strategy = self.config.actor.strategy
         if fsdp_strategy == "fsdp":
+            print(f"[{role}] init_model: wrapping model with FSDP")
             actor_module_fsdp = FSDP(
                 actor_module,
                 cpu_offload=cpu_offload,
@@ -404,6 +412,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             actor_module_fsdp = actor_module
         else:
             raise NotImplementedError(f"not implement {fsdp_strategy}")
+
+        print(f"[{role}] init_model: FSDP wrapping finished")
 
         if enable_activation_offload:
             enable_activation_offloading(actor_module_fsdp, fsdp_strategy, enable_gradient_checkpointing)

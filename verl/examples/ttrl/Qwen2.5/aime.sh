@@ -2,6 +2,11 @@
 #export VLLM_ATTENTION_BACKEND=XFORMERS
 unset VLLM_ATTENTION_BACKEND
 export VLLM_USE_V1=1
+export HF_HUB_ETAG_TIMEOUT=60
+export HF_HUB_DOWNLOAD_TIMEOUT=180
+export HF_HUB_VERBOSITY=debug
+export TRANSFORMERS_VERBOSITY=warning
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # ------------------------------------------------------------
 
@@ -9,27 +14,30 @@ DATE=$(date +%m%d)
 TIME_TAG=$(date +%H%M%S)
 
 TASK="AIME-TTT"
-BACKBONE="Qwen2.5-7B"
+BACKBONE="Qwen2.5-Math-1.5B"
 ADVANTAGE="grpo"
+LORA_RANK=32
+LORA_ALPHA=32
 
-K=3
+K=1
 MAX_PROMPT_LENGTH=512
 MAX_RESPONSE_LENGTH=$((1024 * $K))
 if [ "$K" -gt 8 ]; then
   N=4
 else
-  N=16
+  N=1
 fi
 
 EPISODE=80
-DATA_TRAIN_BATCH_SIZE=8
-N_VOTES_PER_PROMPT=64
-N_SAMPLES_PER_PROMPT=32
+DATA_TRAIN_BATCH_SIZE=1
+N_VOTES_PER_PROMPT=2
+N_SAMPLES_PER_PROMPT=2
 MINI_BATCH_SIZE=1
-MICRO_BATCH_SIZE=2
+MICRO_BATCH_SIZE=1
 
-DATA_LOCAL_DIR="path/to/TTRL/verl/data"
-BACKBONE_PATH="path/to/${BACKBONE}"
+DATA_LOCAL_DIR="/home/rmedu/Rabeya/TTRL/verl/data"
+BACKBONE_PATH="Qwen/Qwen2.5-Math-1.5B"
+MODEL_CACHE_DIR="${HOME}/.cache/ttrl-models/${BACKBONE}"
 
 MODEL="${TASK}-${BACKBONE}"
 EXPERIMENT="TTRL-Len@${K}k"
@@ -39,6 +47,19 @@ LOG_NAME="${DATE}-${EXPERIMENT}-${MODEL}-${ADVANTAGE}"
 OUTPUT_DIR="checkpoints/${WANDB_PROJECT}/${MODEL}/${DATE}/${EXPERIMENT}-${ADVANTAGE}-${TIME_TAG}"
 
 # ------------------------------------------------------------
+echo "Pre-downloading model to: ${MODEL_CACHE_DIR}"
+python - <<PY
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id="${BACKBONE_PATH}",
+    local_dir="${MODEL_CACHE_DIR}",
+    resume_download=True,
+)
+PY
+
+BACKBONE_PATH="${MODEL_CACHE_DIR}"
+
 python -m verl.trainer.main_ppo \
 --config-name='ppo_trainer_ttrl.yaml'\
   data.train_files=["$DATA_LOCAL_DIR/$TASK/train.parquet"] \
@@ -51,17 +72,22 @@ python -m verl.trainer.main_ppo \
   +data.suffix_prompt='"\nPlease reason step by step, and put your final answer within \boxed{}."' \
   actor_rollout_ref.model.path=$BACKBONE_PATH \
   actor_rollout_ref.model.enable_gradient_checkpointing=True \
+  actor_rollout_ref.model.lora_rank=$LORA_RANK \
+  actor_rollout_ref.model.lora_alpha=$LORA_ALPHA \
+  actor_rollout_ref.model.target_modules=all-linear \
   actor_rollout_ref.model.use_remove_padding=True \
   actor_rollout_ref.actor.ppo_mini_batch_size=$MINI_BATCH_SIZE \
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$MICRO_BATCH_SIZE \
-  actor_rollout_ref.actor.use_kl_loss=True \
-  actor_rollout_ref.actor.optim.lr=5e-7 \
+  actor_rollout_ref.actor.use_kl_loss=False \
+  actor_rollout_ref.actor.use_torch_compile=False \
+  actor_rollout_ref.actor.optim.lr=3e-5 \
   actor_rollout_ref.actor.optim.lr_warmup_steps_ratio=0.03 \
   actor_rollout_ref.actor.optim.warmup_style='cosine' \
   actor_rollout_ref.actor.fsdp_config.param_offload=False \
   actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
   actor_rollout_ref.actor.ppo_max_token_len_per_gpu=$((MAX_PROMPT_LENGTH + MAX_RESPONSE_LENGTH)) \
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$MICRO_BATCH_SIZE \
+  actor_rollout_ref.ref.use_torch_compile=False \
   actor_rollout_ref.ref.fsdp_config.param_offload=True \
   actor_rollout_ref.rollout.name=vllm \
   actor_rollout_ref.rollout.temperature=0.6 \
@@ -69,7 +95,9 @@ python -m verl.trainer.main_ppo \
   actor_rollout_ref.rollout.free_cache_engine=False \
   actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$MICRO_BATCH_SIZE \
   actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
+  actor_rollout_ref.rollout.gpu_memory_utilization=0.60 \
+  actor_rollout_ref.rollout.load_format=safetensors \
+  actor_rollout_ref.rollout.layered_summon=True \
   actor_rollout_ref.rollout.n=$N_SAMPLES_PER_PROMPT \
   actor_rollout_ref.rollout.val_kwargs.do_sample=True \
   actor_rollout_ref.rollout.val_kwargs.n=$N \
@@ -94,10 +122,10 @@ python -m verl.trainer.main_ppo \
   trainer.logger=['console','wandb'] \
   trainer.project_name=$WANDB_PROJECT \
   trainer.experiment_name=$LOG_NAME \
-  trainer.n_gpus_per_node=8 \
+  trainer.n_gpus_per_node=1 \
   trainer.nnodes=1 \
   trainer.save_freq=2000000 \
-  trainer.test_freq=2 \
+  trainer.test_freq=20 \
   trainer.max_actor_ckpt_to_keep=0 \
   trainer.max_critic_ckpt_to_keep=0 \
   trainer.default_local_dir=$OUTPUT_DIR \

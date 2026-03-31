@@ -1,4 +1,5 @@
 import os
+import sys
 
 import datasets
 
@@ -33,8 +34,10 @@ def make_map_fn(split, source=None):
         return process_fn
 
 if __name__ == '__main__':
-
-    data_source = 'MATH-L5-TTT'
+    if len(sys.argv) > 1:
+        data_source = sys.argv[1]
+    else:
+        data_source = 'data/MATH-L5-TTT'
 
     train_dataset = datasets.load_dataset("json", data_files=os.path.join(data_source, 'train.json'), split='train')
     test_dataset = datasets.load_dataset("json", data_files=os.path.join(data_source, 'test.json'), split='train')
